@@ -1,4 +1,4 @@
-# AI Stroke Prediction System
+# Early Stroke Detection Using Machine Learning
 
 ## Description
 Machine learning model to predict stroke risk based on medical data.
