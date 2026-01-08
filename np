@@ -1,0 +1,313 @@
+# --------------------- IMPORTS ------------------------
+import streamlit as st
+import joblib
+import numpy as np
+import json
+import hashlib
+import os
+import matplotlib.pyplot as plt
+import pandas as pd
+from datetime import datetime
+from streamlit_lottie import st_lottie
+import requests
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import classification_report, confusion_matrix
+
+# --------------------- CUSTOM CSS ------------------------
+def inject_custom_css():
+    st.markdown("""
+        <style>
+        body {
+            font-family: 'Segoe UI', sans-serif;
+        }
+        .stApp {
+            background: linear-gradient(to bottom, #e3f2fd, #ffffff);
+        }
+        h1, h2, h3, .st-bb, .st-eb {
+            color: #0d47a1;
+        }
+        .stSidebar, .css-1v3fvcr {
+            background-color: #1565c0 !important;
+        }
+        .stButton>button {
+            background-color: #1976d2;
+            color: white;
+            border-radius: 8px;
+            font-size: 1rem;
+        }
+        .stButton>button:hover {
+            background-color: #0d47a1;
+        }
+        .stMetric {
+            background: #e3f2fd;
+            border-radius: 12px;
+            padding: 1em;
+        }
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background-color: #90caf9;
+            border-radius: 10px;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+# --------------------- LOTTIE LOADER ------------------------
+def load_lottieurl(url):
+    r = requests.get(url)
+    if r.status_code != 200:
+        return None
+    return r.json()
+
+# --------------------- USER AUTH ------------------------
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def load_users():
+    if os.path.exists("users.json"):
+        with open("users.json", "r") as file:
+            return json.load(file)
+    return {}
+
+def save_users(users):
+    with open("users.json", "w") as file:
+        json.dump(users, file)
+
+def register_user(username, password):
+    users = load_users()
+    if username in users:
+        return False
+    users[username] = hash_password(password)
+    save_users(users)
+    return True
+
+def login_user(username, password):
+    users = load_users()
+    return username in users and users[username] == hash_password(password)
+
+# --------------------- MODEL & HISTORY ------------------------
+@st.cache_resource
+def load_model():
+    return joblib.load("stroke_prediction_model.pkl")
+
+def load_history():
+    if not os.path.exists("history.json") or os.stat("history.json").st_size == 0:
+        return {}
+    with open("history.json", "r") as file:
+        try:
+            return json.load(file)
+        except json.JSONDecodeError:
+            return {}
+
+def save_history(history):
+    with open("history.json", "w") as file:
+        json.dump(history, file, indent=4)
+
+def save_prediction(username, input_data, prediction, proba):
+    history = load_history()
+    if username not in history:
+        history[username] = []
+    history[username].append({
+        "datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "inputs": input_data,
+        "prediction": "Stroke Likely" if prediction == 1 else "No Stroke",
+        "probability": round(proba, 4)
+    })
+    save_history(history)
+
+# --------------------- UI PAGES ------------------------
+def login_register_ui():
+    st.sidebar.title("🔐 Login / Register")
+
+    if "auth_mode" not in st.session_state:
+        st.session_state["auth_mode"] = "Login"
+
+    if st.session_state["auth_mode"] == "Login":
+        st.sidebar.subheader("Login")
+        username = st.sidebar.text_input("Username")
+        password = st.sidebar.text_input("Password", type="password")
+        if st.sidebar.button("Login"):
+            if login_user(username, password):
+                st.session_state["logged_in"] = True
+                st.session_state["username"] = username
+                st.success(f"✅ Welcome, {username}!")
+                st.rerun()
+            else:
+                st.error("❌ Invalid username or password")
+        st.sidebar.markdown("Don't have an account?")
+        if st.sidebar.button("Go to Register"):
+            st.session_state["auth_mode"] = "Register"
+            st.rerun()
+    else:
+        st.sidebar.subheader("Register")
+        new_username = st.sidebar.text_input("New Username")
+        new_password = st.sidebar.text_input("New Password", type="password")
+        confirm_password = st.sidebar.text_input("Confirm Password", type="password")
+        if st.sidebar.button("Register"):
+            if new_password != confirm_password:
+                st.warning("⚠️ Passwords do not match.")
+            elif register_user(new_username, new_password):
+                st.success("✅ Registration successful. Please login.")
+                st.session_state["auth_mode"] = "Login"
+                st.rerun()
+            else:
+                st.warning("⚠️ Username already exists.")
+        st.sidebar.markdown("Already have an account?")
+        if st.sidebar.button("Go to Login"):
+            st.session_state["auth_mode"] = "Login"
+            st.rerun()
+
+def prediction_page():
+    st.title("🧠 Stroke Risk Prediction")
+
+    with st.form("predict_form"):
+        st.markdown("#### Fill in your health details")
+        col1, col2 = st.columns(2)
+
+        with col1:
+            gender = st.selectbox("Gender", ["Male", "Female", "Other"])
+            age = st.slider("Age", 0, 100, 30)
+            hypertension = st.selectbox("Hypertension", ["No", "Yes"])
+            heart_disease = st.selectbox("Heart Disease", ["No", "Yes"])
+            systolic_bp = st.number_input("Systolic BP (mm Hg)", 80, 200, 120)
+            diastolic_bp = st.number_input("Diastolic BP (mm Hg)", 50, 140, 80)
+
+        with col2:
+            avg_glucose = st.number_input("Avg Glucose Level", 50.0, 300.0, 100.0)
+            weight = st.number_input("Weight (kg)", 30.0, 200.0, 70.0)
+            height = st.number_input("Height (cm)", 100.0, 220.0, 170.0)
+            bmi = weight / ((height / 100) ** 2)
+            st.markdown(f"**Calculated BMI:** {bmi:.2f}")
+            ldl_chol = st.number_input("LDL Cholesterol (mg/dL)", 50, 250, 120)
+            smoking_status = st.selectbox("Smoking Status", ["never smoked", "formerly smoked", "smokes"])
+
+        physical_activity = st.selectbox("Physical Activity Level", ["Low", "Moderate", "High"])
+        alcohol_use = st.selectbox("Alcohol Use", ["Never", "Occasionally", "Frequently"])
+
+        submitted = st.form_submit_button("Predict")
+
+        if submitted:
+            gender_male = 1 if gender == "Male" else 0
+            gender_other = 1 if gender == "Other" else 0
+            hypertension = 1 if hypertension == "Yes" else 0
+            heart_disease = 1 if heart_disease == "Yes" else 0
+
+            smoking_status_formerly_smoked = 1 if smoking_status == "formerly smoked" else 0
+            smoking_status_never_smoked = 1 if smoking_status == "never smoked" else 0
+            smoking_status_smokes = 1 if smoking_status == "smokes" else 0
+
+            physical_activity_low = 1 if physical_activity == "Low" else 0
+            physical_activity_moderate = 1 if physical_activity == "Moderate" else 0
+
+            alcohol_use_never = 1 if alcohol_use == "Never" else 0
+            alcohol_use_occasionally = 1 if alcohol_use == "Occasionally" else 0
+
+            input_array = [
+                age, hypertension, heart_disease, avg_glucose, bmi,
+                systolic_bp, diastolic_bp, ldl_chol,
+                gender_male, gender_other,
+                smoking_status_formerly_smoked, smoking_status_never_smoked, smoking_status_smokes,
+                physical_activity_low, physical_activity_moderate,
+                alcohol_use_never, alcohol_use_occasionally
+            ]
+
+            input_data = np.array([input_array])
+
+            model = joblib.load("stroke_model.pkl")
+            scaler = joblib.load("stroke_scaler.pkl")
+            input_scaled = scaler.transform(input_data)
+
+            prediction = model.predict(input_scaled)[0]
+            proba = model.predict_proba(input_scaled)[0][1]
+
+            if prediction == 1:
+                st.error("⚠️ High Risk of Stroke")
+            else:
+                st.success("✅ Low Risk of Stroke")
+
+            st.metric("Stroke Risk (%)", f"{proba * 100:.2f}%")
+
+            # ✅ Save to History
+            save_prediction(st.session_state["username"], input_array, prediction, proba)
+
+            if proba > 0.7:
+                st.markdown("🔴 **High Risk**")
+                st.warning("⚠️ **High Risk**: Consult a doctor, reduce salt intake, and monitor BP regularly.")
+            elif proba > 0.4:
+                st.markdown("🟡 **Moderate Risk**")
+                st.info("⚠️ **Moderate Risk**: Exercise daily, eat healthy, and reduce stress.")
+            else:
+                st.markdown("🟢 **Low Risk**")
+                st.success("🎉 **Low Risk**: Keep up your healthy lifestyle!")
+
+def dashboard_page():
+    st.title("📊 Risk Dashboard")
+    history = load_history()
+    user = st.session_state["username"]
+
+    if user not in history or len(history[user]) == 0:
+        st.warning("No prediction history found.")
+        return
+
+    df = pd.DataFrame(history[user])
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    latest = df.iloc[-1]
+    proba = latest["probability"]
+
+    st.markdown(f"**🕓 Last Prediction:** {latest['prediction']} on {latest['datetime']}")
+
+    tab1, tab2, tab3 = st.tabs(["Bar Chart", "Pie Chart", "Trend"])
+    with tab1:
+        fig1, ax1 = plt.subplots()
+        ax1.bar(["No Stroke", "Stroke"], [1 - proba, proba], color=["green", "red"])
+        st.pyplot(fig1)
+    with tab2:
+        fig2, ax2 = plt.subplots()
+        ax2.pie([1 - proba, proba], labels=["No Stroke", "Stroke"], autopct="%1.1f%%", colors=["green", "red"])
+        st.pyplot(fig2)
+    with tab3:
+        fig3, ax3 = plt.subplots()
+        ax3.plot(df["datetime"], df["probability"], marker="o", color="red")
+        ax3.axhline(y=0.7, linestyle="--", color="orange", label="High Risk")
+        ax3.axhline(y=0.4, linestyle="--", color="green", label="Moderate Risk")
+        ax3.legend()
+        st.pyplot(fig3)
+
+        st.subheader("📥 Download Your Data")
+        st.download_button("Download CSV", df.to_csv(index=False), f"{user}_stroke_history.csv", mime="text/csv")
+    def retrain_model_page():
+        st.title("🧠 Retrain Stroke Prediction Model")
+
+# --------------------- MAIN ------------------------
+def main():
+    st.set_page_config("Stroke Prediction App", layout="centered")
+    inject_custom_css()
+
+    if "logged_in" not in st.session_state:
+        st.session_state["logged_in"] = False
+    if "username" not in st.session_state:
+        st.session_state["username"] = ""
+
+    if not st.session_state["logged_in"]:
+        lottie_heart = load_lottieurl("https://assets1.lottiefiles.com/packages/lf20_tutvdkg0.json")
+        st_lottie(lottie_heart, height=250)
+        login_register_ui()
+        return
+
+    st.sidebar.title("🔍 Navigation")
+    choice = st.sidebar.radio("Navigate", ["🏠 Prediction", "📊 Dashboard", "🚪 Logout"])
+
+    if choice == "🏠 Prediction":
+        prediction_page()
+    elif choice == "📊 Dashboard":
+        dashboard_page()
+    elif choice == "🚪 Logout":
+        st.session_state["logged_in"] = False
+        st.session_state["username"] = ""
+        st.rerun()
+
+if __name__ == "__main__":
+    main()      
