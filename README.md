@@ -11,4 +11,4 @@ Machine learning model to predict stroke risk based on medical data.
 
 ## How to Run
 pip install -r requirements.txt
-streamlit run app.py
+streamlit run n.py
